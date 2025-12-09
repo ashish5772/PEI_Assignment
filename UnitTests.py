@@ -37,8 +37,43 @@ def sample_order_df(spark):
         ["order_date", "profit"]
     )
 
+@pytest.fixture
+def customer_raw_df(spark):
+    return spark.read \
+        .format("excel") \
+        .option("headerRows", 1) \
+        .load("/Workspace/Users/Customer.xlsx")
+
+
+@pytest.fixture
+def product_raw_df(spark):
+    return spark.read.option("header", True).csv("/Workspace/Users/Products.csv")
+
+
+@pytest.fixture
+def orders_raw_df(spark):
+    return spark.read.option("multiLine", True).json("/Workspace/Users/Orders.json")
+
+
 
 #Unit Tests
+def test_raw_customer_columns(customer_raw_df):
+    expected = {"Customer ID", "Customer Name", "email", "phone","address","Segment", "Country","City","State","Postal Code","Region"}
+    assert expected.issubset(set(customer_raw_df.columns)), \
+        f"Missing original expected customer columns. Found: {customer_raw_df.columns}"
+        
+def test_raw_product_columns(product_raw_df):
+    expected = {"Product ID","Category","Sub-Category", "Product Name", "State", "Price per product"}
+    assert expected.issubset(set(product_raw_df.columns)), \
+        f"Missing expected product columns. Found: {product_raw_df.columns}"
+
+
+def test_raw_order_columns(orders_raw_df):
+    expected = {"Row ID","Order ID", "Order Date","Ship Date","Ship Mode", "Customer ID", "Product ID", "Quantity", "Price", "Discount", "Profit"}
+    assert expected.issubset(set(orders_raw_df.columns)), \
+        f"Missing expected order columns. Found: {orders_raw_df.columns}"
+        
+        
 def test_process_cols():
     cols = ["Customer Name", "Order-Date", "PHONE Number"]
     expected = ["customer_name", "order_date", "phone_number"]
@@ -99,3 +134,50 @@ def test_date_conversion(sample_order_df):
 
     assert str(rows[0]["order_date"]) == "2016-08-21"
     assert str(rows[1]["order_date"]) == "2014-10-03"
+    
+
+def test_no_nulls_in_id_columns(orders_raw_df, customer_raw_df, product_raw_df):
+
+    id_rules = {
+        "Orders": (orders_raw_df, ["Order ID", "Customer ID", "Product ID"]),
+        "Customers": (customer_raw_df, ["Customer ID"]),
+        "Products": (product_raw_df, ["Product ID"]),
+    }
+
+    failures = {}
+
+    for name, (df, required_cols) in id_rules.items():
+        for col in required_cols:
+            null_count = df.filter(F.col(col).isNull()).count()
+            if null_count > 0:
+                failures[f"{name}.{col}"] = null_count
+
+    assert failures == {}, f"Nulls found in ID fields: {failures}"
+    
+    
+def test_null_threshold(orders_raw_df, customer_raw_df, product_raw_df):
+    #Checks if there are more than 5% nulls in the data, if so, it fails
+    threshold = 0.05  # 5%
+
+    datasets = {
+        "Orders": orders_raw_df,
+        "Customers": customer_raw_df,
+        "Products": product_raw_df,
+    }
+
+    violations = {}
+
+    for name, df in datasets.items():
+        total = df.count()
+        if total == 0:
+            continue  
+
+        for col in df.columns:
+            null_count = df.filter(F.col(col).isNull()).count()
+            null_ratio = null_count / total
+
+            if null_ratio > threshold:
+                violations[f"{name}.{col}"] = f"{null_ratio}"
+
+    assert violations == {}, f"Columns exceeding 5% nulls: {violations}"
+    
